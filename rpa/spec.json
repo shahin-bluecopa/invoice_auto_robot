@@ -1,0 +1,10 @@
+{
+    "documentationUrl": "https://docs.robots.io/integrations",
+    "robotSpecification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "Invoice Robot",
+        "type": "object",
+        "required": [],
+        "properties": {}
+    }
+}
