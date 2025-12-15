@@ -12,9 +12,17 @@ class InvoiceRobot(AbstractRobot):
     def get_config_spec(self) -> dict:
         return {}
 
-    def run_robot(self, logger: logging.Logger, config: Mapping[str, Any], input_file_path: str, output_folder_path: str, state: Union[List[RobotStateMessage], MutableMapping[str, Any]] = None):
+    def run_robot(
+        self,
+        logger: logging.Logger,
+        config: Mapping[str, Any],
+        input_file_path: str,
+        output_folder_path: str,
+        state: Union[List[RobotStateMessage], MutableMapping[str, Any]] = None
+    ):
         logger.info(f"Starting {self.name}")
-        
-        process_invoices(logger)
-        
+        logger.info(f"input_file_path as argument {input_file_path}")
+
+        process_invoices(logger, config)
+
         logger.info(f"Finished {self.name}")
