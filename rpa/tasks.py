@@ -1,177 +1,150 @@
+#updated invoice robot
 import json
 import logging
 import os
-
 from docxtpl import DocxTemplate
 from docx import Document
 from docx2pdf import convert
 
+# --- Utilities ---
 
-# --------------------------------------------------
-# Utility: Indian number formatting
-# --------------------------------------------------
+def to_float(value):
+    return float(str(value).replace(",", "")) if value else 0.0
+
 def format_inr(value):
     try:
-        value = int(round(float(value)))
-        s = str(value)
-        if len(s) <= 3:
-            return s
-        last3 = s[-3:]
-        rest = s[:-3]
-        rest = ",".join(
-            [rest[max(i - 2, 0):i] for i in range(len(rest), 0, -2)][::-1]
-        )
+        s = str(int(round(float(value))))
+        if len(s) <= 3: return s
+        rest, last3 = s[:-3], s[-3:]
+        rest = ",".join([rest[max(i - 2, 0):i] for i in range(len(rest), 0, -2)][::-1])
         return f"{rest},{last3}"
     except Exception:
-        return ""
+        return "0"
 
-
-# --------------------------------------------------
-# Fill services table using python-docx (NO placeholders)
-# --------------------------------------------------
 def fill_services_table(doc: Document, services: list):
     for table in doc.tables:
+        if not table.rows: continue
         header = " ".join(c.text.lower() for c in table.rows[0].cells)
-        if "description of service" in header and "amount" in header:
-
-            # Remove placeholder row (row index 1)
-            if len(table.rows) > 1:
-                table._tbl.remove(table.rows[1]._tr)
-
+        if "description" in header and "amount" in header:
+            if len(table.rows) > 1: table._tbl.remove(table.rows[1]._tr)
             for idx, s in enumerate(services, start=1):
                 row = table.add_row().cells
                 row[0].text = str(idx)
-                row[1].text = s.get("description", "")
+                row[1].text = s["description"]
                 row[2].text = s.get("sacCode", "")
-                row[3].text = s.get("qty", "")
-                row[4].text = s.get("rate", "")
-                row[5].text = s.get("amount", "")
+                row[3].text = s["qty_disp"]
+                row[4].text = s["rate_disp"]
+                row[5].text = s["amount_disp"]
             return
 
+def select_template(inv, template_base):
+    inv_type = inv.get("invoice", {}).get("type", "").strip().upper()
+    gstin = (inv.get("supplier", {}).get("gstin") or "").strip().lower()
+    
+    # Check explicitly for BOS or Tax Invoice
+    if inv_type in ("BOS", "BILL_OF_SUPPLY"): return os.path.join(template_base, "BOS_AllPlaceholders.docx")
+    if inv_type in ("TAX", "TAX_INVOICE"): return os.path.join(template_base, "Invoice_Template_AllPlaceholders.docx")
+    
+    # Fallback logic
+    is_unregistered = gstin in ("", "unregistered", "na", "n/a")
+    tax = inv.get("taxDetails", {})
+    total_gst = sum(to_float(tax.get(k)) for k in ["cgstAmount", "sgstAmount", "igstAmount"])
+    
+    if is_unregistered or total_gst == 0:
+        return os.path.join(template_base, "BOS_AllPlaceholders.docx")
+    return os.path.join(template_base, "Invoice_Template_AllPlaceholders.docx")
 
-# --------------------------------------------------
-# Validation: Invoice vs BOS logic
-# --------------------------------------------------
-def validate_invoice_vs_bos(inv, selected_template, logger):
-    supplier = inv.get("supplier", {})
-    buyer = inv.get("buyer", {})
+# --- Logic Handlers ---
 
-    gstin = (supplier.get("gstin") or "").strip()
-    supplier_state = supplier.get("stateCode")
-    buyer_state = buyer.get("stateCode")
+def process_tax_logic(inv):
+    """Applies GST, Display Flags, and TDS logic in one go."""
+    supplier, buyer, tax = inv["supplier"], inv["buyer"], inv["taxDetails"]
+    gstin = (supplier.get("gstin") or "").strip().lower()
+    is_unregistered = gstin in ("", "unregistered")
+    same_state = supplier.get("stateCode") == buyer.get("stateCode")
 
-    if not supplier_state or not buyer_state:
-        logger.warning("StateCode missing for supplier or buyer")
+    # 1. GST Calculations
+    if is_unregistered:
+        tax.update({"cgstRate": 0, "cgstAmount": 0, "sgstRate": 0, "sgstAmount": 0, "igstRate": 0, "igstAmount": 0, "totalTax": 0})
+        tax["grandTotal"] = tax["taxableAmount"]
+    else:
+        if same_state:
+            tax.update({"igstRate": 0, "igstAmount": 0, "totalTax": tax["cgstAmount"] + tax["sgstAmount"]})
+        else:
+            tax.update({"cgstRate": 0, "cgstAmount": 0, "sgstRate": 0, "sgstAmount": 0, "totalTax": tax["igstAmount"]})
+        tax["grandTotal"] = tax["taxableAmount"] + tax["totalTax"]
 
-    if "Invoice_Template" in selected_template:
-        if not gstin or gstin.lower() == "unregistered":
-            logger.warning(
-                f"Invoice {inv['invoice']['number']} generated without GSTIN"
-            )
+    # 2. Display Flags
+    total_gst = tax["cgstAmount"] + tax["sgstAmount"] + tax["igstAmount"]
+    inv["display"] = {
+        "show_gst_section": not is_unregistered and total_gst > 0,
+        "show_cgst": not is_unregistered and same_state and tax["cgstAmount"] > 0,
+        "show_sgst": not is_unregistered and same_state and tax["sgstAmount"] > 0,
+        "show_igst": not is_unregistered and not same_state and tax["igstAmount"] > 0,
+        "show_tds": inv.get("display", {}).get("show_tds", False),
+    }
 
-    if "BOS_" in selected_template:
-        if gstin and gstin.lower() != "unregistered":
-            logger.warning(
-                f"BOS generated for registered supplier "
-                f"(Invoice {inv['invoice']['number']})"
-            )
+    # 3. TDS Logic
+    if inv["display"]["show_tds"]:
+        tds_amt = round(tax["taxableAmount"] * 0.10)
+        inv["tdsDetails"] = {"tdsIncomeTax": {"rate": 10, "amount": tds_amt}, "totalTdsDeducted": tds_amt, "netPayable": tax["grandTotal"] - tds_amt}
+    else:
+        inv["tdsDetails"] = {"tdsIncomeTax": {"rate": 10, "amount": 0}, "totalTdsDeducted": 0, "netPayable": tax["grandTotal"]}
 
+def normalize_and_format(inv):
+    # Services
+    for s in inv["services"]:
+        qty, rate = to_float(s["qty"]), to_float(s["rate"])
+        s.update({"qty_disp": format_inr(qty), "rate_disp": format_inr(rate), "amount_disp": format_inr(qty * rate)})
+    
+    # Tax
+    tax = inv["taxDetails"]
+    for k in ["taxableAmount", "cgstAmount", "sgstAmount", "igstAmount"]:
+        tax[k] = to_float(tax.get(k, 0))
+    
+    process_tax_logic(inv)
+    
+    # Final Formatting
+    for k in ["taxableAmount", "cgstAmount", "sgstAmount", "igstAmount", "totalTax", "grandTotal"]:
+        tax[k] = format_inr(tax[k])
+    
+    tds = inv["tdsDetails"]
+    tds["tdsIncomeTax"]["amount"] = format_inr(tds["tdsIncomeTax"]["amount"])
+    tds["totalTdsDeducted"] = format_inr(tds["totalTdsDeducted"])
+    tds["netPayable"] = format_inr(tds["netPayable"])
 
-# --------------------------------------------------
-# Template selection
-# --------------------------------------------------
-def select_template(inv, base_path):
-    supplier = inv.get("supplier", {})
-    buyer = inv.get("buyer", {})
-
-    gstin = (supplier.get("gstin") or "").strip()
-    supplier_state = (supplier.get("stateCode") or "").strip()
-    buyer_state = (buyer.get("stateCode") or "").strip()
-
-    invoice_tpl = os.path.join(base_path, "Invoice_Template_AllPlaceholders.docx")
-    bos_intra_tpl = os.path.join(base_path, "BOS_Intra_AllPlaceholders.docx")
-    bos_inter_tpl = os.path.join(base_path, "BOS_Inter_AllPlaceholders.docx")
-
-    if gstin and gstin.lower() != "unregistered":
-        return invoice_tpl
-
-    return bos_intra_tpl if supplier_state == buyer_state else bos_inter_tpl
-
-
-# --------------------------------------------------
-# Render DOCX (2-phase)
-# --------------------------------------------------
 def render_docx(template_path, data, out_path):
-    # Phase 1: render normal placeholders
     tpl = DocxTemplate(template_path)
     tpl.render(data)
     tpl.save(out_path)
-
-    # Phase 2: insert services safely
     doc = Document(out_path)
     fill_services_table(doc, data["services"])
     doc.save(out_path)
 
+# --- Main ---
 
-# --------------------------------------------------
-# Main processing
-# --------------------------------------------------
 def process_invoices(logger: logging.Logger, config):
-    INPUT_BASE = config["input_folder"]
-    OUTPUT_DIR = config["output_folder"]
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    INPUT, OUTPUT, TEMPLATES = config["input_folder"], config["output_folder"], config["template_folder"]
+    os.makedirs(OUTPUT, exist_ok=True)
 
-    json_path = os.path.join(INPUT_BASE, "invoice_data.json")
-    logger.info(f"Reading JSON from {json_path}")
-
-    with open(json_path, "r", encoding="utf-8") as f:
+    with open(os.path.join(INPUT, "invoice_data_all_scenario.json"), "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    invoices = data["invoiceSamples"]
-
-    for inv in invoices:
-        logger.info(
-            f"Invoice {inv['invoice']['number']} → "
-            f"{len(inv['services'])} services"
-        )
-
-        # ---- Normalize services
-        for s in inv["services"]:
-            qty = float(s.get("qty", 0))
-            rate = float(s.get("rate", 0))
-            s["qty"] = format_inr(qty)
-            s["rate"] = format_inr(rate)
-            s["amount"] = format_inr(qty * rate)
-
-        # ---- Normalize tax
-        tax = inv["taxDetails"]
-        tax["taxableAmount"] = format_inr(tax.get("taxableAmount", 0))
-        tax["cgstAmount"] = format_inr(tax.get("cgstAmount", 0))
-        tax["sgstAmount"] = format_inr(tax.get("sgstAmount", 0))
-        tax["totalTax"] = format_inr(tax.get("totalTax", 0))
-        tax["grandTotal"] = format_inr(tax.get("grandTotal", 0))
-
-        # ---- TDS safety
-        if inv.get("tdsDetails") is None:
-            inv["tdsDetails"] = {
-                "tdsIncomeTax": {"amount": ""},
-                "tdsGst": {"amount": ""},
-                "totalTdsDeducted": "",
-                "netPayable": tax["grandTotal"],
-            }
-
-        template = select_template(inv, INPUT_BASE)
-        validate_invoice_vs_bos(inv, template, logger)
-
-        invoice_no = inv["invoice"]["number"].replace("/", "-")
-        out_docx = os.path.join(OUTPUT_DIR, f"{invoice_no}.docx")
-        out_pdf = os.path.join(OUTPUT_DIR, f"{invoice_no}.pdf")
-
+    for inv in data["invoiceSamples"]:
+        normalize_and_format(inv)
+        
+        template = select_template(inv, TEMPLATES)
+        out_docx = os.path.join(OUTPUT, f"{inv['invoice']['number'].replace('/', '-')}.docx")
         render_docx(template, inv, out_docx)
 
-        try:
-            convert(out_docx, out_pdf)
-        except Exception as e:
-            logger.warning(f"PDF conversion skipped: {e}")
+    try:
+        logger.info(f"Starting batch conversion in {OUTPUT}...")
+        convert(OUTPUT)
+        logger.info("Batch conversion completed. Cleaning up DOCX files...")
+        for f in [f for f in os.listdir(OUTPUT) if f.lower().endswith(".docx")]:
+             try: os.remove(os.path.join(OUTPUT, f))
+             except Exception as e: logger.warning(f"Failed to delete {f}: {e}")
+    except Exception as e:
+        logger.error(f"Batch conversion failed: {e}")
 
     logger.info("All invoices processed successfully")

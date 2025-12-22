@@ -4,7 +4,33 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "Invoice Robot",
         "type": "object",
-        "required": [],
-        "properties": {}
+        "required": [
+            "input_folder",
+            "output_folder",
+            "template_folder"
+        ],
+        "properties": {
+            "input_folder": {
+                "title": "Input Folder",
+                "type": "string",
+                "description": "Path to the folder containing input files",
+                "example": "C:/Robots/Input",
+                "label": "Input Folder"
+            },
+            "output_folder": {
+                "title": "Output Folder",
+                "type": "string",
+                "description": "Path to the folder where output files will be saved",
+                "example": "C:/Robots/Output",
+                "label": "Output Folder"
+            },
+            "template_folder": {
+                "title": "Template Folder",
+                "type": "string",
+                "description": "Path to the folder containing templates",
+                "example": "C:/Robots/Templates",
+                "label": "Template Folder"
+            }
+        }
     }
 }
