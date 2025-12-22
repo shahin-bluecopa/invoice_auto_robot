@@ -23,6 +23,6 @@ class InvoiceRobot(AbstractRobot):
         logger.info(f"Starting {self.name}")
         logger.info(f"input_file_path as argument {input_file_path}")
 
-        process_invoices(logger, config)
+        process_invoices(logger, config, input_file_path, output_folder_path)
 
         logger.info(f"Finished {self.name}")

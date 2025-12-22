@@ -1,3 +1,4 @@
+
 from rpa.invoice_robot import InvoiceRobot
 import sys
 from bluecopa_rpa_sdk.entrypoint import launch

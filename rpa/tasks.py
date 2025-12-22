@@ -123,11 +123,12 @@ def render_docx(template_path, data, out_path):
 
 # --- Main ---
 
-def process_invoices(logger: logging.Logger, config):
-    INPUT, OUTPUT, TEMPLATES = config["input_folder"], config["output_folder"], config["template_folder"]
+def process_invoices(logger: logging.Logger, config, input_file_path, output_folder_path):
+    TEMPLATES = config["template_folder"]
+    OUTPUT = output_folder_path
     os.makedirs(OUTPUT, exist_ok=True)
 
-    with open(os.path.join(INPUT, "invoice_data_all_scenario.json"), "r", encoding="utf-8") as f:
+    with open(input_file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     for inv in data["invoiceSamples"]:
